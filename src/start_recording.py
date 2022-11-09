@@ -59,8 +59,8 @@ def main():
     argparser.add_argument(
         '-f', '--recorder_filename',
         metavar='F',
-        default="test1.log",
-        help='recorder filename (test1.log)')
+        default="test6.log",
+        help='recorder filename (test6.log)')
     argparser.add_argument(
         '-t', '--recorder_time',
         metavar='T',
@@ -85,8 +85,8 @@ def main():
         print('found %d spawn points.' % len(spawn_points))
 
         count = args.number_of_vehicles
-
-        print("Recording on file: %s" % client.start_recorder(args.recorder_filename))
+        args.recorder_filename = args.recorder_filename
+        print("Recording on file: %s" % client.start_recorder(args.recorder_filename, True))
 
         if args.safe:
             blueprints = [x for x in blueprints if int(x.get_attribute('number_of_wheels')) == 4]

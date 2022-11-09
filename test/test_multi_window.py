@@ -33,16 +33,16 @@ def redirect_input(hwnd, s, input):
 
     # send input to the window, if no other inner windows are there
     for char in input:
-        win32api.SendMessage(hwnd, win32con.WM_CHAR, ord(char), 0)
-        win32api.SendMessage(hwnd, win32con.WM_KEYDOWN, ord(char), 0)
-        sleep(0.01)
-        win32api.SendMessage(hwnd, win32con.WM_KEYDOWN, ord(char), 0)
+        win32api.PostMessage(hwnd, win32con.WM_CHAR, ord(char), 0)
+        # win32api.PostMessage(hwnd, win32con.WM_KEYDOWN, ord(char), 0)
+        # sleep(0.01)
+        # win32api.PostMessage(hwnd, win32con.WM_KEYDOWN, ord(char), 0)
 
     # send input to all inner windows
     # this is effective on windows native apps, like Notepad
     for id, val in enumerate(get_inner_windows(hwnd).values()):
         for char in input:
-            win32api.SendMessage(val, win32con.WM_CHAR, ord(char), 0)
+            win32api.PostMessage(val, win32con.WM_CHAR, ord(char), 0)
 
 
 def list_window_names():
@@ -61,6 +61,7 @@ def get_inner_windows(whndl):
 
     hwnds = {}
     win32gui.EnumChildWindows(whndl, callback, hwnds)
+    print(hwnds)
     return hwnds
 
 def find_all_windows(arr):
@@ -77,6 +78,7 @@ def find_all_windows(arr):
 if __name__ == '__main__':
     win_names = ["*test1.txt - Notepad", "*test2.txt - Notepad"]
     # win_names = ['Pygame']
+    # win_names = ["New Tab - Google Chrome"]
     inputs = ["input for first doc", "input for second doc"]
     main(win_names, inputs)
 # list_window_names()

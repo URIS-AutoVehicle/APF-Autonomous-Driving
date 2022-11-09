@@ -12,16 +12,16 @@
 """
 Welcome to CARLA manual control.
 
-Use ARROWS or WASD keys for control.
+Use ps4 joystick for control.
 
-    W            : throttle
-    S            : brake
-    A/D          : steer left/right
-    Q            : toggle reverse
-    Space        : hand-brake
-    P            : toggle autopilot
-    M            : toggle manual transmission
-    ,/.          : gear up/down
+    Throttle     : throttle
+    Brake        : brake
+    Steer        : steer left/right
+    L Gear       : toggle reverse (in auto-transmission mode)
+    X symbol     : hand-brake
+    ○ symbol     : toggle autopilot
+    □ symbol     : toggle manual transmission
+    R/L Gear     : gear up/down
     CTRL + W     : toggle constant velocity mode at 60 km/h
 
     L            : toggle next light type
@@ -65,6 +65,7 @@ from __future__ import print_function
 import glob
 import os
 import sys
+import manual_control_joystick
 
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
@@ -630,7 +631,7 @@ class KeyboardControl(object):
         self._control.throttle = remap(throttle)
         self._control.brake = remap(brake)
 
-        self._control.steer = round(0.7 * steer, 3)
+        self._control.steer = round(0.5 * steer, 3)
         self._control.hand_brake = hand_brake
     def _parse_vehicle_keys(self, keys, milliseconds):
         if keys[K_UP] or keys[K_w]:
@@ -1248,9 +1249,9 @@ def game_loop(args):
     pygame.font.init()
 
     global j1, j2
-    j1 = pygame.joystick.Joystick(1)
+    j1 = pygame.joystick.Joystick(0)
     j1.init()
-    j2 = pygame.joystick.Joystick(0)
+    j2 = pygame.joystick.Joystick(1)
     j2.init()
 
     world = None
@@ -1258,9 +1259,11 @@ def game_loop(args):
 
     try:
         client = carla.Client(args.host, args.port)
-        client.set_timeout(20.0)
+        client.set_timeout(20.0):::
+        print(client.get_available_maps())
+        sim_world = client.load_world('Town04')
 
-        sim_world = client.get_world()
+        # sim_world = client.get_world()
         if args.sync:
             original_settings = sim_world.get_settings()
             settings = sim_world.get_settings()
@@ -1323,7 +1326,7 @@ def game_loop(args):
 
 def main():
     argparser = argparse.ArgumentParser(
-        description='CARLA Manual Control Client')
+        description='CARLA Manual Control Client for Joysticks')
     argparser.add_argument(
         '-v', '--verbose',
         action='store_true',
@@ -1347,8 +1350,8 @@ def main():
     argparser.add_argument(
         '--res',
         metavar='WIDTHxHEIGHT',
-        default='1280x720',
-        help='window resolution (default: 1280x720)')
+        default='1920x1080',
+        help='window resolution (default: 1920x1080)')
     argparser.add_argument(
         '--filter',
         metavar='PATTERN',

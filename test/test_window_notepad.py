@@ -8,14 +8,14 @@ def main():
     hwnd = get_inner_windows(hwnd)['Edit']
     win = win32ui.CreateWindowFromHandle(hwnd)
 
-    win.SendMessage(win32con.WM_CHAR, ord('A'), 0)
-    win.SendMessage(win32con.WM_CHAR, ord('B'), 0)
-    win.SendMessage(win32con.WM_KEYDOWN, 0x1E, 0)
+    win.PostMessage(win32con.WM_CHAR, ord('A'), 0)
+    win.PostMessage(win32con.WM_CHAR, ord('B'), 0)
+    win.PostMessage(win32con.WM_KEYDOWN, 0x1E, 0)
     sleep(0.5)
-    win.SendMessage(win32con.WM_KEYUP, 0x1E, 0)
-    win32api.SendMessage(hwnd, win32con.WM_KEYDOWN, 0x41, 0)
+    win.PostMessage(win32con.WM_KEYUP, 0x1E, 0)
+    win32api.PostMessage(hwnd, win32con.WM_KEYDOWN, 0x41, 0)
     sleep(0.5)
-    win32api.SendMessage(hwnd, win32con.WM_KEYUP, 0x41, 0)
+    win32api.PostMessage(hwnd, win32con.WM_KEYUP, 0x41, 0)
 
 
 def list_window_names():

@@ -12,7 +12,7 @@ import glob
 import os
 import sys
 import time
-
+import manual_control_joystick_copy
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
         sys.version_info.major,
@@ -340,7 +340,6 @@ def main():
             all_actors[i].set_max_speed(float(walker_speed[int(i/2)]))
 
         print('spawned %d vehicles and %d walkers, press Ctrl+C to exit.' % (len(vehicles_list), len(walkers_list)))
-
         # Example of how to use Traffic Manager parameters
         traffic_manager.global_percentage_speed_difference(30.0)
 
@@ -379,3 +378,5 @@ if __name__ == '__main__':
         pass
     finally:
         print('\ndone.')
+
+

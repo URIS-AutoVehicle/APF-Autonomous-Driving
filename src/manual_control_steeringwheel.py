@@ -224,7 +224,8 @@ class DualControl(object):
 
         joystick_count = pygame.joystick.get_count()
         if joystick_count > 1:
-            raise ValueError("Please Connect Just One Joystick")
+            pass
+            # raise ValueError("Please Connect Just One Joystick")
 
         self._joystick = pygame.joystick.Joystick(0)
         self._joystick.init()

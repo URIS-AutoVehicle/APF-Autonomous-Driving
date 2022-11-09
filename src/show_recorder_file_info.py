@@ -41,8 +41,8 @@ def main():
     argparser.add_argument(
         '-f', '--recorder_filename',
         metavar='F',
-        default="test1.rec",
-        help='recorder filename (test1.rec)')
+        default="test5.log",
+        help='recorder filename (test5.log)')
     argparser.add_argument(
         '-a', '--show_all',
         action='store_true',
@@ -53,7 +53,7 @@ def main():
         help='save result to file (specify name and extension)')
 
     args = argparser.parse_args()
-
+    #args.show_all = 6677
     try:
 
         client = carla.Client(args.host, args.port)
@@ -63,12 +63,17 @@ def main():
             doc.write(client.show_recorder_file_info(args.recorder_filename, args.show_all))
             doc.close()
         else:
-            print(client.show_recorder_file_info(args.recorder_filename, args.show_all))
-
-
+            #with open('C:/carla/WindowsNoEditor/PythonAPI/examples/src/data/test1.txt', 'a+') as f:
+                print(client.show_recorder_file_info(args.recorder_filename, args.show_all))
     finally:
         pass
 
+#vehicle_coords =[]
+#your_coord = 0
+#for each_frame in frames:
+
+#for coords in all_vehicle coord:
+    #vehicle_coords.append(coord)
 
 if __name__ == '__main__':
 

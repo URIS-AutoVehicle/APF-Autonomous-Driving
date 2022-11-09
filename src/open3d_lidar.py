@@ -242,7 +242,7 @@ if __name__ == "__main__":
     argparser.add_argument(
         '--host',
         metavar='H',
-        default='localhost',
+        default='127.0.0.1',
         help='IP of the host CARLA Simulator (default: localhost)')
     argparser.add_argument(
         '-p', '--port',
