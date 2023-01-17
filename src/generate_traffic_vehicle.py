@@ -10,8 +10,11 @@
 
 import glob
 import os
+os.environ['FOR_DISABLE_CONSOLE_CTRL_HANDLER'] = '1'
 import sys
 import time
+import math
+from scipy import integrate
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
         sys.version_info.major,
@@ -29,6 +32,9 @@ import logging
 import numpy
 from numpy import random
 random.seed(4)
+def getlinearline(p1, p2):
+    return lambda x: (x-p1[0])/(p2[0]-p1[0])*(p2[1]-p1[1])+p1[1]
+
 def get_actor_blueprints(world, filter, generation):
     bps = world.get_blueprint_library().filter(filter)
 
@@ -274,6 +280,7 @@ def main():
 
         traffic_manager.global_percentage_speed_difference(-20)
         R=50
+        D=1
         print(vehicles_list)
 
 
@@ -281,8 +288,16 @@ def main():
             if actor.attributes.get('role_name') == 'hero':
                 player = actor
                 break
+
         # carla.Rotation.__init__(player,pitch=0.0, yaw=0.0, roll=0.0)
         # print(player.get_transform().rotation)
+        ego_len = 4.8
+        ego_wid = 1.8
+        traffic_len = 4.8
+        traffic_wid = 1.8
+        sigma = 1
+        # spectator = world.get_spectator()
+        # camera_bp = world.get_blueprint_library().find('sensor.camera.rgb')
 
         while True:
             if not args.asynch and synchronous_master:
@@ -299,20 +314,47 @@ def main():
             #
             #     with open('C:/carla/WindowsNoEditor/PythonAPI/examples/src/data/location.txt', 'a+') as f:
             #         print ('id: ', vehicles_list[a], actor.get_location(), actor.get_velocity(),file=f)
+            # camera_transform = carla.Transform(carla.Location(x=1.5, z=2.4))
+            # camera = world.spawn_actor(camera_bp, camera_transform, attach_to=player)
+            # spectator.set_transform(camera.get_transform())
             matrix = player.get_transform().get_matrix()
+
             actor_list = world.get_actors(vehicles_list)
             # ego = actor_list.find(vehicles_list[0])
             player_info = player.get_transform()
             inverse_matrix = numpy.linalg.inv(matrix)
             print('player', player_info.location, player.get_velocity())
+
+            orientation = [player.get_transform().rotation.roll, player.get_transform().rotation.pitch, player.get_transform().rotation.yaw-player.get_transform().rotation.yaw]
+
+
             player_location = [[player_info.location.x], [player_info.location.y], [player_info.location.z],[1]]
             player_velocity = [[player.get_velocity().x], [player.get_velocity().y], [player.get_velocity().z], [0]]
             player_final_location = numpy.dot(inverse_matrix,player_location)
             player_final_velocity = numpy.dot(inverse_matrix,player_velocity)
+            #
+            # spectator_location = [[player_final_location[0][0]  ], [player_final_location[1][0]+20],
+            #                       [player_final_location[2][0]+20], [1]]
+            #
+            # spectator_real_location = numpy.dot(matrix, spectator_location)
+            # spectator_real_location_carla = carla.Location(spectator_real_location[0][0], spectator_real_location[1][0],
+            #                                                spectator_real_location[2][0])
+            # spectator = world.get_spectator()
+            # spectator.set_transform(carla.Transform(spectator_real_location_carla, carla.Rotation(pitch=-90)))
+            # spectator = world.get_spectator()
+            # transform = player.get_transform()
+            # spectator.set_transform(carla.Transform(transform.location + carla.Location(z=20), carla.Rotation(pitch=-90)))
+            for n in range(6):
+                future_location= [[player_final_location[0][0]+3*n], [player_final_location[1][0]], [player_final_location[2][0]],[1]]
+
+
+                future_real_location = numpy.dot(matrix,future_location)
+                future_real_location_carla = carla.Location(future_real_location[0][0], future_real_location[1][0], future_real_location[2][0])
+                world.debug.draw_point(future_real_location_carla, size=0.1, color=carla.Color(r=0, g=255, b=0), life_time=5)
 
             print('player', 'location:', player_final_location[0][0], player_final_location[1][0], player_final_location[2][0],  'velocity:', player_final_velocity[0][0], player_final_velocity[1][0], player_final_velocity[2][0])
 
-            world.debug.draw_point(player_info.location, size=0.1, color=carla.Color(r=255, g=0, b=0), life_time=0)
+            world.debug.draw_point(player_info.location, size=0.1, color=carla.Color(r=255, g=0, b=0), life_time=5)
             # world.debug.draw_string(player_info.location, '^', draw_shadow=False, color=carla.Color(r=255, g=0, b=0), life_time=0)
             vehicles = []
             # print(manual_control_joystick_copy.game_loop().location)
@@ -323,14 +365,54 @@ def main():
                 # with open('C:/carla/WindowsNoEditor/PythonAPI/examples/src/data/location.txt', 'a+') as f:
                 #     print('id: ', vehicles_list[a], actor.get_location(), actor.get_velocity(), file=f)
                 if ((player.get_location().x-actor.get_location().x)**2+(player.get_location().y-actor.get_location().y)**2) <= (R**2):
-
+                    # actor.apply_control(carla.VehicleControl(throttle=0, brake=1))
+                    print('actorOrientation: ', actor.get_transform().rotation.yaw-player.get_transform().rotation.yaw)
                 #     print('id: ', vehicles_list[a], actor.get_location(), actor.get_velocity(), len(vehicles))
                     vehicles.append(vehicles_list[a])
                     actor_location = [[actor.get_location().x], [actor.get_location().y], [actor.get_location().z], [1]]
-                    actor_velocity =[[actor.get_velocity().x], [actor.get_velocity().y], [actor.get_velocity().z], [1]]
+                    actor_velocity =[[actor.get_velocity().x], [actor.get_velocity().y], [actor.get_velocity().z], [0]]
+                    # print(actor.get_transform().rotation)
                     actor_final_location = numpy.dot(inverse_matrix, actor_location)
                     actor_final_velocity = numpy.dot(inverse_matrix, actor_velocity)
-                    print('id: ', vehicles_list[a], 'location:', actor_final_location[0][0], actor_final_location[1][0], actor_final_location[2][0], 'velocity:', actor_final_velocity[0][0], actor_final_velocity[1][0], actor_final_velocity[2][0])
+                    u = actor_final_velocity[0]
+                    v = actor_final_velocity[1]
+
+                    edgP1 = [ego_len / 2, ego_wid / 2]
+                    edgP2 = [-ego_len / 2, ego_wid / 2]
+                    edgP3 = [ego_len / 2, -ego_wid / 2]
+                    edgP4 = [-ego_len / 2, -ego_wid / 2]
+                    diagLen = 0.5 * (traffic_len ** 2 + traffic_wid ** 2) ** (1 / 2)
+                    angle = (actor.get_transform().rotation.yaw-player.get_transform().rotation.yaw)/180*(math.pi)
+                    angle2 = 0.5 * math.pi - angle
+                    angle3 = math.atan(traffic_wid / traffic_len)
+                    angle4 = math.pi - angle - angle3
+                    angle5 = 0.5 * math.pi
+                    octagon1 = [edgP1[0] + math.sin(angle4) * diagLen, edgP1[1] - math.cos(angle4) * diagLen]
+                    octagon2 = [octagon1[0] - math.sin(angle2) * traffic_wid, octagon1[1] + math.cos(angle2) * traffic_wid]
+                    octagon8 = [edgP1[0] + math.sin(angle4) * diagLen, edgP1[1] - math.cos(angle4) * diagLen - ego_wid]
+                    octagon3 = [octagon1[0] - math.sin(angle2) * traffic_wid - ego_len, octagon1[1] + math.cos(angle2) * traffic_wid]
+                    octagon4 = [-octagon8[0], -octagon8[1]]
+                    octagon5 = [octagon4[0], octagon4[1] - ego_wid]
+                    octagon6 = [-octagon2[0], -octagon2[1]]
+                    octagon7 = [-octagon2[0] + ego_len, -octagon2[1]]
+                    x = actor_final_location[0]
+                    y = actor_final_location[1]
+                    f = lambda y1, x1: 1 / (2 * math.pi * sigma ** 2) * math.exp(-0.5 * ((x1 - x) ** 2 / (sigma) ** 2 + (y1 - y) ** 2 / sigma ** 2))
+                    al1 = integrate.dblquad(f, octagon4[0], octagon6[0], getlinearline(octagon5, octagon6), getlinearline(octagon4, octagon3))
+                    al2 = integrate.dblquad(f, octagon6[0], octagon3[0], octagon6[1], getlinearline(octagon4, octagon3))
+                    al3 = integrate.dblquad(f, octagon3[0], octagon7[0], octagon6[1], octagon3[1])
+                    al4 = integrate.dblquad(f, octagon7[0], octagon2[0], getlinearline(octagon7, octagon8), octagon2[1])
+                    al5 = integrate.dblquad(f, octagon2[0], octagon1[0], getlinearline(octagon7, octagon8), getlinearline(octagon2, octagon1))
+                    all = [al1[0] + al2[0] + al3[0] + al4[0] + al5[0]]
+                    probability = round(all[0],4)
+
+
+
+                    print('id: ', vehicles_list[a], 'location:', actor_final_location[0][0], actor_final_location[1][0], actor_final_location[2][0], 'velocity:', actor_final_velocity[0][0], actor_final_velocity[1][0], actor_final_velocity[2][0], 'probability:', probability)
+                    world.debug.draw_point(actor.get_location(), size=0.1, color=carla.Color(r=0, g=0, b=255), life_time=5)
+                    world.debug.draw_string(actor.get_location(), str(probability),  draw_shadow=False, color=carla.Color(r=255, g=0, b=0), life_time=0.5)
+
+
 
             print(len(vehicles))
 

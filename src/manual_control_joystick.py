@@ -1251,19 +1251,18 @@ def game_loop(args):
     global j1, j2
     j1 = pygame.joystick.Joystick(0)
     j1.init()
-    j2 = pygame.joystick.Joystick(1)
-    j2.init()
+    #j2 = pygame.joystick.Joystick(1)
+    #j2.init()
 
     world = None
     original_settings = None
 
     try:
         client = carla.Client(args.host, args.port)
-        client.set_timeout(20.0):::
+        client.set_timeout(20.0)
         print(client.get_available_maps())
-        sim_world = client.load_world('Town04')
-
-        # sim_world = client.get_world()
+        sim_world = client.load_world('Town10HD')
+        sim_world = client.get_world()
         if args.sync:
             original_settings = sim_world.get_settings()
             settings = sim_world.get_settings()
@@ -1350,7 +1349,7 @@ def main():
     argparser.add_argument(
         '--res',
         metavar='WIDTHxHEIGHT',
-        default='1920x1080',
+        default='2560x1400',
         help='window resolution (default: 1920x1080)')
     argparser.add_argument(
         '--filter',
@@ -1388,7 +1387,6 @@ def main():
     print(__doc__)
 
     try:
-
         game_loop(args)
 
     except KeyboardInterrupt:
@@ -1396,5 +1394,4 @@ def main():
 
 
 if __name__ == '__main__':
-
     main()

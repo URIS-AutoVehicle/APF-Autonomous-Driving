@@ -93,7 +93,7 @@ import math
 import random
 import re
 import weakref
-random.seed(6)
+random.seed(2)
 
 try:
     import pygame
@@ -1262,7 +1262,7 @@ def game_loop(args):
         client = carla.Client(args.host, args.port)
         client.set_timeout(20.0)
         print(client.get_available_maps())
-        sim_world = client.load_world('Town10HD')
+        sim_world = client.load_world('Town01')
 
         # sim_world = client.get_world()
         if args.sync:
