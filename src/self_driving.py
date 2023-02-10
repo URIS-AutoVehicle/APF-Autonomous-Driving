@@ -50,6 +50,7 @@ def main():
 
         bp = bp_lib.filter('model3')[0]
         sel_point = random.choice(spawn_points)
+        sel_point = spawn_points[24]
         vehicle = world.spawn_actor(bp, sel_point)
         logging.info('spawn vehicle')
         logging.debug(f'spawn vehicle {bp} to spawn point {sel_point}')
@@ -59,7 +60,7 @@ def main():
         bp_sensor.set_attribute('image_size_y', f'{IM_HEIGHT}')
         bp_sensor.set_attribute('fov', '110')
         bp_sensor.set_attribute('sensor_tick', f'{1/IM_FPS}')
-        attach_point = carla.Transform(carla.Location(x=2.5, z=0.7))
+        attach_point = carla.Transform(carla.Location(x=2.0, y=-0.4, z=0.9))
         sensor = world.spawn_actor(bp_sensor, attach_point, attach_to=vehicle)
         actor_list.append(sensor)
         sensor.listen(lambda scene: process_img(scene))

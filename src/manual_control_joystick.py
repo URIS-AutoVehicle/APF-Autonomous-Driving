@@ -1104,6 +1104,7 @@ class CameraManager(object):
 
         if not self._parent.type_id.startswith("walker.pedestrian"):
             self._camera_transforms = [
+                (carla.Transform(carla.Location(x=-0.15, y=-0.4, z=1.2), carla.Rotation()), Attachment.Rigid),
                 (carla.Transform(carla.Location(x=-2.0*bound_x, y=+0.0*bound_y, z=2.0*bound_z), carla.Rotation(pitch=8.0)), Attachment.SpringArm),
                 (carla.Transform(carla.Location(x=+0.8*bound_x, y=+0.0*bound_y, z=1.3*bound_z)), Attachment.Rigid),
                 (carla.Transform(carla.Location(x=+1.9*bound_x, y=+1.0*bound_y, z=1.2*bound_z)), Attachment.SpringArm),
@@ -1261,7 +1262,7 @@ def game_loop(args):
         client = carla.Client(args.host, args.port)
         client.set_timeout(20.0)
         print(client.get_available_maps())
-        sim_world = client.load_world('Town10HD')
+        # sim_world = client.load_world('Town04')
         sim_world = client.get_world()
         if args.sync:
             original_settings = sim_world.get_settings()
