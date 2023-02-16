@@ -65,6 +65,7 @@ from __future__ import print_function
 import glob
 import os
 import sys
+import manual_control_joystick
 
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
@@ -338,11 +339,16 @@ class World(object):
 
     def render(self, display):
         self.camera_manager.render(display)
+        self.camera_manager.render_others()
         self.hud.render(display)
 
     def destroy_sensors(self):
         self.camera_manager.sensor.destroy()
         self.camera_manager.sensor = None
+        for c in self.camera_manager.sensor_others:
+            if c is not None:
+                c.destroy()
+        self.camera_manager.sensor_others = [None for _ in range(len(self._camera_transforms))]
         self.camera_manager.index = None
 
     def destroy(self):
@@ -608,7 +614,7 @@ class KeyboardControl(object):
             elif isinstance(self._control, carla.WalkerControl):
                 self._parse_walker_keys(pygame.key.get_pressed(), clock.get_time(), world)
             world.player.apply_control(self._control)
-    def _parse_vehicle_joystick(self, joystick):
+    def _parse_vehicle_joystick(self):
         '''
         parse joystick actions and change _control accordingly
         _control.steer in range [-.7,.7]
@@ -616,7 +622,7 @@ class KeyboardControl(object):
         _control brake in range [0, 1]
         '''
 
-        global j1
+        global j1, j2
 
         # steer ranged -1 ~ 1; init 0, most left -1, most right 1
         # throttle and brake ranged 1 ~ -1; 1 init state; -1 max state
@@ -696,7 +702,7 @@ class HUD(object):
         default_font = 'ubuntumono'
         mono = default_font if default_font in fonts else fonts[0]
         mono = pygame.font.match_font(mono)
-        self._font_mono = pygame.font.Font(mono, 12 if os.name == 'nt' else 14)
+        self._font_mono = pygame.font.Font(mono, 14 if os.name == 'nt' else 16)
         self._font_speed = pygame.font.Font(mono, 64)
         self._notifications = FadingText(font, (width, 40), (0, height - 40))
         self.help = HelpText(pygame.font.Font(mono, 16), width, height)
@@ -815,15 +821,15 @@ class HUD(object):
                             rect = pygame.Rect((bar_h_offset, v_offset + 8), (f * bar_width, 6))
                         pygame.draw.rect(display, (255, 255, 255), rect)
                     item = item[0]
-                if item:  # At this point has to be a str.
-                    if item.startswith('Speed'):
+                elif isinstance(item, str):
+                    if 'Speed' in item:
                         speed = item.replace(' ', '')[6:]
                         surface = self._font_speed.render(speed, True, (255, 255, 0))
                         display.blit(surface,
                                      (display.get_width()-self._font_speed.size(speed)[0]-10,
                                       10)
                                      )
-
+                if item:  # At this point has to be a str.
                     surface = self._font_mono.render(item, True, (255, 255, 255))
                     display.blit(surface, (8, v_offset))
                 v_offset += 18
@@ -1180,15 +1186,31 @@ class CameraManager(object):
             if self.sensor is not None:
                 self.sensor.destroy()
                 self.surface = None
+            for c in self.sensor_others:
+                if c is not None:
+                    c.destroy()
+            self.surface_others = [None for _ in range(len(self._camera_transforms))]
             self.sensor = self._parent.get_world().spawn_actor(
                 self.sensors[index][-1],
                 self._camera_transforms[self.transform_index][0],
                 attach_to=self._parent,
                 attachment_type=self._camera_transforms[self.transform_index][1])
+            for tx_i in range(len(self._camera_transforms)):
+            # for tx_i in []:
+                if tx_i != self.transform_index:
+                    self.sensor_others[tx_i] = self._parent.get_world().spawn_actor(
+                        self.sensors[index][-1],
+                        self._camera_transforms[tx_i][0],
+                        attach_to=self._parent,
+                        attachment_type=self._camera_transforms[tx_i][1])
             # We need to pass the lambda a weak reference to self to avoid
             # circular reference.
             weak_self = weakref.ref(self)
             self.sensor.listen(lambda image: CameraManager._parse_image(weak_self, image))
+            weak_self_others = [weakref.ref(self) for _ in range(len(self.sensor_others))]
+            for idx, sensor in enumerate(self.sensor_others):
+                if sensor is not None and idx != self.transform_index:
+                    sensor.listen(lambda image: CameraManager._parse_image_others(weak_self_others[idx], image, idx))
         if notify:
             self.hud.notification(self.sensors[index][2])
         self.index = index
@@ -1203,6 +1225,56 @@ class CameraManager(object):
     def render(self, display):
         if self.surface is not None:
             display.blit(self.surface, (0, 0))
+
+    def render_others(self):
+        for i, img in enumerate(self.surface_others):
+            if img is not None:
+                cv2.imshow(f"sensor_{i}", img)
+                cv2.waitKey(1)
+
+    @staticmethod
+    def _parse_image_others(weak_self, image, index):
+        self = weak_self()
+        if not self:
+            return
+        if self.sensors[self.index][0].startswith('sensor.lidar'):
+            points = np.frombuffer(image.raw_data, dtype=np.dtype('f4'))
+            points = np.reshape(points, (int(points.shape[0] / 4), 4))
+            lidar_data = np.array(points[:, :2])
+            lidar_data *= min(self.hud.dim) / (2.0 * self.lidar_range)
+            lidar_data += (0.5 * self.hud.dim[0], 0.5 * self.hud.dim[1])
+            lidar_data = np.fabs(lidar_data)  # pylint: disable=E1111
+            lidar_data = lidar_data.astype(np.int32)
+            lidar_data = np.reshape(lidar_data, (-1, 2))
+            lidar_img_size = (self.hud.dim[0], self.hud.dim[1], 3)
+            lidar_img = np.zeros((lidar_img_size), dtype=np.uint8)
+            lidar_img[tuple(lidar_data.T)] = (255, 255, 255)
+            self.surface_others[index] = lidar_img
+        elif self.sensors[self.index][0].startswith('sensor.camera.dvs'):
+            # Example of converting the raw_data from a carla.DVSEventArray
+            # sensor into a NumPy array and using it as an image
+            dvs_events = np.frombuffer(image.raw_data, dtype=np.dtype([
+                ('x', np.uint16), ('y', np.uint16), ('t', np.int64), ('pol', np.bool)]))
+            dvs_img = np.zeros((image.height, image.width, 3), dtype=np.uint8)
+            # Blue is positive, red is negative
+            dvs_img[dvs_events[:]['y'], dvs_events[:]['x'], dvs_events[:]['pol'] * 2] = 255
+            self.surface_others[index] = dvs_img
+        elif self.sensors[self.index][0].startswith('sensor.camera.optical_flow'):
+            image = image.get_color_coded_flow()
+            array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+            array = np.reshape(array, (image.height, image.width, 4))
+            array = array[:, :, :3]
+            array = array[:, :, ::-1]
+            self.surface_others[index] = array
+        else:
+            image.convert(self.sensors[self.index][1])
+            array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+            array = np.reshape(array, (image.height, image.width, 4))
+            array = array[:, :, :3]
+            array = array[:, :, ::-1]
+            self.surface_others[index] = array
+        if self.recording and false:
+            image.save_to_disk('out/%08d' % image.frame)
 
     @staticmethod
     def _parse_image(weak_self, image):
@@ -1258,9 +1330,11 @@ def game_loop(args):
     pygame.init()
     pygame.font.init()
 
-    global j1
+    global j1, j2
     j1 = pygame.joystick.Joystick(0)
     j1.init()
+    #j2 = pygame.joystick.Joystick(1)
+    #j2.init()
 
     world = None
     original_settings = None
@@ -1288,7 +1362,7 @@ def game_loop(args):
 
         display = pygame.display.set_mode(
             (args.width, args.height),
-            pygame.HWSURFACE | pygame.DOUBLEBUF | pygame.FULLSCREEN)
+            pygame.HWSURFACE | pygame.DOUBLEBUF)
         display.fill((0,0,0))
         pygame.display.flip()
 
@@ -1357,7 +1431,7 @@ def main():
     argparser.add_argument(
         '--res',
         metavar='WIDTHxHEIGHT',
-        default='1920x1080',
+        default='2560x1400',
         help='window resolution (default: 1920x1080)')
     argparser.add_argument(
         '--filter',

@@ -40,6 +40,7 @@ def main():
 
         world = client.get_world()
 
+
         bp_lib = world.get_blueprint_library()
         logging.info('get all blueprints from the library')
         logging.debug(f'{bp_lib}')
@@ -54,19 +55,6 @@ def main():
         vehicle = world.spawn_actor(bp, sel_point)
         logging.info('spawn vehicle')
         logging.debug(f'spawn vehicle {bp} to spawn point {sel_point}')
-        # Set a seed so behaviour can be repeated if necessary
-        traffic_manager.set_random_device_seed(0)
-        random.seed(0)
-
-        # We will aslo set up the spectator so we can see what we do
-        spectator = world.get_spectator()
-
-        # Create pre-designed regeneration points
-        spawn_points = world.get_map().get_spawn_points()
-
-        # Draw the spawn point locations as numbers in the map
-        for i, spawn_point in enumerate(spawn_points):
-            world.debug.draw_string(spawn_point.location, str(i), life_time=10000)
 
         bp_sensor = bp_lib.find('sensor.camera.rgb')
         bp_sensor.set_attribute('image_size_x', f'{IM_WIDTH}')
@@ -79,12 +67,51 @@ def main():
         sensor.listen(lambda scene: process_img(scene))
         logging.info('spawn sensor and attach to vehicle')
         logging.debug(f'sensor {IM_HEIGHT}x{IM_WIDTH} FOV 110, at {IM_FPS} fps; attached to vehicle {vehicle}')
+        print(vehicle.get_location())
 
         vehicle.apply_control(carla.VehicleControl(throttle=1., steer=0))
         actor_list.append(vehicle)
         logging.info('add control to vehicle and add vehicle to actor list')
+        d = 3.5  # 道路标准宽度
 
-        time.sleep(10000)
+        W = 1.8  # 汽车宽度
+
+        L = 4.7  # 车长
+
+        P0 = np.array(vehicle.get_location())  # 车辆起点位置，分别代表x,y,vx,vy
+
+        Pg = np.array([-52,111,0.6,0])  # 目标位置
+
+        # 障碍物位置
+        Pobs = np.array([
+            [15, 7 / 4, 0, 0],
+            [30, - 3 / 2, 0, 0],
+            [45, 3 / 2, 0, 0],
+            [60, - 3 / 4, 0, 0],
+            [80, 3 / 2, 0, 0]])
+
+        P = np.vstack((Pg, Pobs))  # 将目标位置和障碍物位置合放在一起
+
+        Eta_att = 5  # 引力的增益系数
+
+        Eta_rep_ob = 15  # 斥力的增益系数
+
+        Eta_rep_edge = 50  # 道路边界斥力的增益系数
+
+        d0 = 20  # 障碍影响的最大距离
+
+        num = P.shape[0]  # 障碍与目标总计个数
+
+        len_step = 0.5  # 步长
+
+        n = 1
+
+        Num_iter = 300  # 最大循环迭代次数
+
+
+
+        time.sleep(2)
+        print(vehicle.get_location())
 
     finally:
         logging.info('destroy all actors that have been spawned')
