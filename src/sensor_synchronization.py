@@ -50,7 +50,7 @@ def sensor_callback(sensor_data, sensor_queue, sensor_name):
 
 def main():
     # We start creating the client
-    client = carla.Client('localhost', 2000)
+    client = carla.Client('127.0.0.1', 2000)
     client.set_timeout(2.0)
     world = client.get_world()
 

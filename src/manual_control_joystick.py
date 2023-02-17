@@ -56,7 +56,6 @@ Use ps4 joystick for control.
 
 from __future__ import print_function
 
-
 # ==============================================================================
 # -- find carla module ---------------------------------------------------------
 # ==============================================================================
@@ -73,7 +72,6 @@ try:
         'win-amd64' if os.name == 'nt' else 'linux-x86_64'))[0])
 except IndexError:
     pass
-
 
 # ==============================================================================
 # -- imports -------------------------------------------------------------------
@@ -93,6 +91,7 @@ import random
 import re
 import weakref
 import cv2
+from queue import Queue
 
 try:
     import pygame
@@ -160,6 +159,7 @@ def get_actor_display_name(actor, truncate=250):
     name = ' '.join(actor.type_id.replace('_', '.').title().split('.')[1:])
     return (name[:truncate - 1] + u'\u2026') if len(name) > truncate else name
 
+
 def get_actor_blueprints(world, filter, generation):
     bps = world.get_blueprint_library().filter(filter)
 
@@ -204,6 +204,9 @@ class World(object):
             sys.exit(1)
         self.hud = hud
         self.player = None
+        self.camera_left = None
+        self.camera_right = None
+        self.camera_back = None
         self.collision_sensor = None
         self.lane_invasion_sensor = None
         self.gnss_sensor = None
@@ -280,6 +283,9 @@ class World(object):
             self.show_vehicle_telemetry = False
             self.modify_vehicle_physics(self.player)
         # Set up the sensors.
+        self.camera_left = SideViewSensor(self.player, "Left Camera", 1)
+        self.camera_right = SideViewSensor(self.player, "Right Camera", 2)
+        self.camera_back = SideViewSensor(self.player, "Back Camera", 3)
         self.collision_sensor = CollisionSensor(self.player, self.hud)
         self.lane_invasion_sensor = LaneInvasionSensor(self.player, self.hud)
         self.gnss_sensor = GnssSensor(self.player)
@@ -325,7 +331,7 @@ class World(object):
             self.radar_sensor = None
 
     def modify_vehicle_physics(self, actor):
-        #If actor is not a vehicle, we cannot use the physics control
+        # If actor is not a vehicle, we cannot use the physics control
         try:
             physics_control = actor.get_physics_control()
             physics_control.use_sweep_wheel_collision = True
@@ -338,6 +344,9 @@ class World(object):
 
     def render(self, display):
         self.camera_manager.render(display)
+        self.camera_left.render()
+        self.camera_right.render()
+        self.camera_back.render()
         self.hud.render(display)
 
     def destroy_sensors(self):
@@ -350,6 +359,9 @@ class World(object):
             self.toggle_radar()
         sensors = [
             self.camera_manager.sensor,
+            self.camera_left.sensor,
+            self.camera_right.sensor,
+            self.camera_back.sensor,
             self.collision_sensor.sensor,
             self.lane_invasion_sensor.sensor,
             self.gnss_sensor.sensor,
@@ -369,6 +381,7 @@ class World(object):
 
 class KeyboardControl(object):
     """Class that handles keyboard input."""
+
     def __init__(self, world, start_in_autopilot):
         self._autopilot_enabled = start_in_autopilot
         if isinstance(world.player, carla.Vehicle):
@@ -586,7 +599,6 @@ class KeyboardControl(object):
                         world.hud.notification(
                             'Autopilot %s' % ('On' if self._autopilot_enabled else 'Off'))
 
-
         if not self._autopilot_enabled:
             if isinstance(self._control, carla.VehicleControl):
                 # self._parse_vehicle_keys(pygame.key.get_pressed(), clock.get_time())
@@ -595,20 +607,21 @@ class KeyboardControl(object):
                 # Set automatic control-related vehicle lights
                 if self._control.brake:
                     current_lights |= carla.VehicleLightState.Brake
-                else: # Remove the Brake flag
+                else:  # Remove the Brake flag
                     current_lights &= ~carla.VehicleLightState.Brake
                 if self._control.reverse:
                     current_lights |= carla.VehicleLightState.Reverse
-                else: # Remove the Reverse flag
+                else:  # Remove the Reverse flag
                     current_lights &= ~carla.VehicleLightState.Reverse
-                if current_lights != self._lights: # Change the light state only if necessary
+                if current_lights != self._lights:  # Change the light state only if necessary
                     self._lights = current_lights
                     world.player.set_light_state(carla.VehicleLightState(self._lights))
 
             elif isinstance(self._control, carla.WalkerControl):
                 self._parse_walker_keys(pygame.key.get_pressed(), clock.get_time(), world)
             world.player.apply_control(self._control)
-    def _parse_vehicle_joystick(self, joystick):
+
+    def _parse_vehicle_joystick(self):
         '''
         parse joystick actions and change _control accordingly
         _control.steer in range [-.7,.7]
@@ -625,7 +638,7 @@ class KeyboardControl(object):
 
         # remapping 1 to 0, -1 to 1
         def remap(val):
-            res = 0.5 - 1/2 * val
+            res = 0.5 - 1 / 2 * val
             return round(res, 3)
 
         self._control.throttle = remap(throttle)
@@ -633,6 +646,7 @@ class KeyboardControl(object):
 
         self._control.steer = round(0.5 * steer, 3)
         self._control.hand_brake = hand_brake
+
     def _parse_vehicle_keys(self, keys, milliseconds):
         if keys[K_UP] or keys[K_w]:
             self._control.throttle = min(self._control.throttle + 0.01, 1.00)
@@ -738,7 +752,7 @@ class HUD(object):
             'Map:     % 20s' % world.map.name.split('/')[-1],
             'Simulation time: % 12s' % datetime.timedelta(seconds=int(self.simulation_time)),
             '',
-            'Speed:   % 15.0f km/h' % (3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)),
+            'Speed:   % 15.0f km/h' % (3.6 * math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)),
             u'Compass:% 17.0f\N{DEGREE SIGN} % 2s' % (compass, heading),
             'Accelero: (%5.1f,%5.1f,%5.1f)' % (world.imu_sensor.accelerometer),
             'Gyroscop: (%5.1f,%5.1f,%5.1f)' % (world.imu_sensor.gyroscope),
@@ -767,7 +781,8 @@ class HUD(object):
             'Number of vehicles: % 8d' % len(vehicles)]
         if len(vehicles) > 1:
             self._info_text += ['Nearby vehicles:']
-            distance = lambda l: math.sqrt((l.x - t.location.x)**2 + (l.y - t.location.y)**2 + (l.z - t.location.z)**2)
+            distance = lambda l: math.sqrt(
+                (l.x - t.location.x) ** 2 + (l.y - t.location.y) ** 2 + (l.z - t.location.z) ** 2)
             vehicles = [(distance(x.get_location()), x) for x in vehicles if x.id != world.player.id]
             for d, vehicle in sorted(vehicles, key=lambda vehicles: vehicles[0]):
                 if d > 200.0:
@@ -820,7 +835,7 @@ class HUD(object):
                         speed = item.replace(' ', '')[6:]
                         surface = self._font_speed.render(speed, True, (255, 255, 0))
                         display.blit(surface,
-                                     (display.get_width()-self._font_speed.size(speed)[0]-10,
+                                     (display.get_width() - self._font_speed.size(speed)[0] - 10,
                                       10)
                                      )
 
@@ -867,6 +882,7 @@ class FadingText(object):
 
 class HelpText(object):
     """Helper class to handle text output using pygame"""
+
     def __init__(self, font, width, height):
         lines = __doc__.split('\n')
         self.font = font
@@ -889,6 +905,58 @@ class HelpText(object):
         if self._render:
             display.blit(self.surface, self.pos)
 
+
+# ==============================================================================
+# -- SideViewSensor ------------------------------------------------------------
+# ==============================================================================
+
+
+class SideViewSensor(object):
+    def __init__(self, parent_actor, hint, index):
+        self.sensor = None
+        self.image = None
+        # self.sensor_r = None
+        self.history = []
+        self._parent = parent_actor
+        self.hint = hint
+
+        bound_x = 0.5 + self._parent.bounding_box.extent.x
+        bound_y = 0.5 + self._parent.bounding_box.extent.y
+        bound_z = 0.5 + self._parent.bounding_box.extent.z
+        transforms = [
+            carla.Transform(carla.Location(x=-0.05 * bound_x, y=-0.25 * bound_y, z=0.95 * bound_z),
+                             carla.Rotation(pitch=-1.0)),
+            carla.Transform(carla.Location(x=0.22 * bound_x, y=-0.5 * bound_y - 0.2, z=0.8 * bound_z),
+                             carla.Rotation(pitch=-10.0, yaw=-170.0)),
+            carla.Transform(carla.Location(x=0.22 * bound_x, y=0.5 * bound_y + 0.2, z=0.8 * bound_z),
+                             carla.Rotation(pitch=-10.0, yaw=170.0)),
+            carla.Transform(carla.Location(x=-0.2 * bound_x, y=0.0, z=2 * bound_z),
+                             carla.Rotation(pitch=-30, yaw=180.0)),
+        ]
+
+        world = self._parent.get_world()
+        bp = world.get_blueprint_library().find('sensor.camera.rgb')
+        self.sensor = world.spawn_actor(bp, transforms[index % len(transforms)], attach_to=self._parent)
+        # We need to pass the lambda a weak reference to self to avoid circular
+        # reference.
+        weak_self = weakref.ref(self)
+        self.sensor.listen(lambda data: SideViewSensor._sensor_callback(weak_self, data))
+
+    def render(self):
+        cv2.imshow(self.hint, self.image)
+        cv2.waitKey(1)
+
+    @staticmethod
+    def _sensor_callback(weak_self, image):
+        self = weak_self()
+        if not self:
+            return
+        # render an image and show in cv2
+        image.convert(cc.Raw)
+        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+        array = np.reshape(array, (image.height, image.width, 4))
+        array = array[:, :, :3]
+        self.image = array
 
 # ==============================================================================
 # -- CollisionSensor -----------------------------------------------------------
@@ -923,7 +991,7 @@ class CollisionSensor(object):
         actor_type = get_actor_display_name(event.other_actor)
         self.hud.notification('Collision with %r' % actor_type)
         impulse = event.normal_impulse
-        intensity = math.sqrt(impulse.x**2 + impulse.y**2 + impulse.z**2)
+        intensity = math.sqrt(impulse.x ** 2 + impulse.y ** 2 + impulse.z ** 2)
         self.history.append((event.frame, intensity))
         if len(self.history) > 4000:
             self.history.pop(0)
@@ -1040,7 +1108,7 @@ class RadarSensor(object):
         bound_y = 0.5 + self._parent.bounding_box.extent.y
         bound_z = 0.5 + self._parent.bounding_box.extent.z
 
-        self.velocity_range = 7.5 # m/s
+        self.velocity_range = 7.5  # m/s
         world = self._parent.get_world()
         self.debug = world.debug
         bp = world.get_blueprint_library().find('sensor.other.radar')
@@ -1049,7 +1117,7 @@ class RadarSensor(object):
         self.sensor = world.spawn_actor(
             bp,
             carla.Transform(
-                carla.Location(x=bound_x + 0.05, z=bound_z+0.05),
+                carla.Location(x=bound_x + 0.05, z=bound_z + 0.05),
                 carla.Rotation(pitch=5)),
             attach_to=self._parent)
         # We need a weak reference to self to avoid circular reference.
@@ -1083,7 +1151,7 @@ class RadarSensor(object):
             def clamp(min_v, max_v, value):
                 return max(min_v, min(value, max_v))
 
-            norm_velocity = detect.velocity / self.velocity_range # range [-1, 1]
+            norm_velocity = detect.velocity / self.velocity_range  # range [-1, 1]
             r = int(clamp(0.0, 1.0, 1.0 - norm_velocity) * 255.0)
             g = int(clamp(0.0, 1.0, 1.0 - abs(norm_velocity)) * 255.0)
             b = int(abs(clamp(- 1.0, 0.0, - 1.0 - norm_velocity)) * 255.0)
@@ -1093,6 +1161,7 @@ class RadarSensor(object):
                 life_time=0.06,
                 persistent_lines=False,
                 color=carla.Color(r, g, b))
+
 
 # ==============================================================================
 # -- CameraManager -------------------------------------------------------------
@@ -1109,23 +1178,32 @@ class CameraManager(object):
         bound_x = 0.5 + self._parent.bounding_box.extent.x
         bound_y = 0.5 + self._parent.bounding_box.extent.y
         bound_z = 0.5 + self._parent.bounding_box.extent.z
+        print(f'Bounds: {bound_x} {bound_y} {bound_z}')
         Attachment = carla.AttachmentType
 
         if self._parent.type_id.startswith("walker.pedestrian"):
             self._camera_transforms = [
                 (carla.Transform(carla.Location(x=-2.5, z=0.0), carla.Rotation(pitch=-8.0)), Attachment.SpringArm),
                 (carla.Transform(carla.Location(x=1.6, z=1.7)), Attachment.Rigid),
-                (carla.Transform(carla.Location(x=2.5, y=0.5, z=0.0), carla.Rotation(pitch=-8.0)), Attachment.SpringArm),
+                (
+                    carla.Transform(carla.Location(x=2.5, y=0.5, z=0.0), carla.Rotation(pitch=-8.0)),
+                    Attachment.SpringArm),
                 (carla.Transform(carla.Location(x=-4.0, z=2.0), carla.Rotation(pitch=6.0)), Attachment.SpringArm),
                 (carla.Transform(carla.Location(x=0, y=-2.5, z=-0.0), carla.Rotation(yaw=90.0)), Attachment.Rigid)]
         else:
             self._camera_transforms = [
-                (carla.Transform(carla.Location(x=-0.15, y=-0.4, z=1.2), carla.Rotation()), Attachment.Rigid),
-                (carla.Transform(carla.Location(x=-2.0*bound_x, y=+0.0*bound_y, z=2.0*bound_z), carla.Rotation(pitch=8.0)), Attachment.SpringArm),
-                (carla.Transform(carla.Location(x=-2.8*bound_x, y=+0.0*bound_y, z=4.6*bound_z), carla.Rotation(pitch=6.0)), Attachment.SpringArm)]
-
-        self.sensor_others = [None for _ in range(len(self._camera_transforms))]
-        self.surface_others = [None for _ in range(len(self._camera_transforms))]
+                (carla.Transform(carla.Location(x=-0.05 * bound_x, y=-0.25 * bound_y, z=0.95 * bound_z),
+                                 carla.Rotation(pitch=-1.0)), Attachment.Rigid),
+                (carla.Transform(carla.Location(x=0.22 * bound_x, y=-0.5 * bound_y - 0.2, z=0.8 * bound_z),
+                                 carla.Rotation(pitch=-10.0, yaw=-170.0)), Attachment.Rigid),
+                (carla.Transform(carla.Location(x=0.22 * bound_x, y=0.5 * bound_y + 0.2, z=0.8 * bound_z),
+                                 carla.Rotation(pitch=-10.0, yaw=170.0)), Attachment.Rigid),
+                (carla.Transform(carla.Location(x=-0.2 * bound_x, y=0.0, z=2 * bound_z),
+                                 carla.Rotation(pitch=-30, yaw=180.0)), Attachment.Rigid),
+                (carla.Transform(carla.Location(x=-2.0 * bound_x, y=+0.0 * bound_y, z=2.0 * bound_z),
+                                 carla.Rotation(pitch=8.0)), Attachment.SpringArm),
+                (carla.Transform(carla.Location(x=-2.8 * bound_x, y=+0.0 * bound_y, z=4.6 * bound_z),
+                                 carla.Rotation(pitch=6.0)), Attachment.SpringArm)]
 
         self.transform_index = 1
         self.sensors = [
@@ -1134,20 +1212,21 @@ class CameraManager(object):
             ['sensor.camera.depth', cc.Depth, 'Camera Depth (Gray Scale)', {}],
             ['sensor.camera.depth', cc.LogarithmicDepth, 'Camera Depth (Logarithmic Gray Scale)', {}],
             ['sensor.camera.semantic_segmentation', cc.Raw, 'Camera Semantic Segmentation (Raw)', {}],
-            ['sensor.camera.semantic_segmentation', cc.CityScapesPalette, 'Camera Semantic Segmentation (CityScapes Palette)', {}],
-            ['sensor.camera.instance_segmentation', cc.CityScapesPalette, 'Camera Instance Segmentation (CityScapes Palette)', {}],
+            ['sensor.camera.semantic_segmentation', cc.CityScapesPalette,
+             'Camera Semantic Segmentation (CityScapes Palette)', {}],
+            ['sensor.camera.instance_segmentation', cc.CityScapesPalette,
+             'Camera Instance Segmentation (CityScapes Palette)', {}],
             ['sensor.camera.instance_segmentation', cc.Raw, 'Camera Instance Segmentation (Raw)', {}],
             ['sensor.lidar.ray_cast', None, 'Lidar (Ray-Cast)', {'range': '50'}],
             ['sensor.camera.dvs', cc.Raw, 'Dynamic Vision Sensor', {}],
             ['sensor.camera.rgb', cc.Raw, 'Camera RGB Distorted',
-                {'lens_circle_multiplier': '3.0',
-                'lens_circle_falloff': '3.0',
-                'chromatic_aberration_intensity': '0.5',
-                'chromatic_aberration_offset': '0'}],
+             {'lens_circle_multiplier': '3.0',
+              'lens_circle_falloff': '3.0',
+              'chromatic_aberration_intensity': '0.5',
+              'chromatic_aberration_offset': '0'}],
             ['sensor.camera.optical_flow', cc.Raw, 'Optical Flow', {}],
         ]
-        world = self._parent.get_world()
-        bp_library = world.get_blueprint_library()
+        bp_library = self._parent.get_world().get_blueprint_library()
         for item in self.sensors:
             bp = bp_library.find(item[0])
             if item[0].startswith('sensor.camera'):
@@ -1159,12 +1238,10 @@ class CameraManager(object):
                     bp.set_attribute(attr_name, attr_value)
             elif item[0].startswith('sensor.lidar'):
                 self.lidar_range = 50
-
                 for attr_name, attr_value in item[3].items():
                     bp.set_attribute(attr_name, attr_value)
                     if attr_name == 'range':
                         self.lidar_range = float(attr_value)
-
             item.append(bp)
         self.index = None
 
@@ -1288,8 +1365,9 @@ def game_loop(args):
 
         display = pygame.display.set_mode(
             (args.width, args.height),
-            pygame.HWSURFACE | pygame.DOUBLEBUF | pygame.FULLSCREEN)
-        display.fill((0,0,0))
+            pygame.HWSURFACE | pygame.DOUBLEBUF  # | pygame.FULLSCREEN
+        )
+        display.fill((0, 0, 0))
         pygame.display.flip()
 
         hud = HUD(args.width, args.height)
@@ -1362,7 +1440,7 @@ def main():
     argparser.add_argument(
         '--filter',
         metavar='PATTERN',
-        default='vehicle.*',
+        default='*model3*',
         help='actor filter (default: "vehicle.*")')
     argparser.add_argument(
         '--generation',
