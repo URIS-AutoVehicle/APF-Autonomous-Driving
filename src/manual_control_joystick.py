@@ -88,9 +88,12 @@ import datetime
 import logging
 import math
 import random
+random.seed(74)
 import re
 import weakref
 import cv2
+import open3d as o3d
+import time
 from queue import Queue
 
 try:
@@ -207,6 +210,7 @@ class World(object):
         self.camera_left = None
         self.camera_right = None
         self.camera_back = None
+        self.semantic_lidar = None
         self.collision_sensor = None
         self.lane_invasion_sensor = None
         self.gnss_sensor = None
@@ -286,6 +290,7 @@ class World(object):
         self.camera_left = SideViewSensor(self.player, "Left Camera", 1)
         self.camera_right = SideViewSensor(self.player, "Right Camera", 2)
         self.camera_back = SideViewSensor(self.player, "Back Camera", 3)
+        self.semantic_lidar = SemanticLidarSensor(self.player, "Semantic Lidar")
         self.collision_sensor = CollisionSensor(self.player, self.hud)
         self.lane_invasion_sensor = LaneInvasionSensor(self.player, self.hud)
         self.gnss_sensor = GnssSensor(self.player)
@@ -347,6 +352,7 @@ class World(object):
         self.camera_left.render()
         self.camera_right.render()
         self.camera_back.render()
+        self.semantic_lidar.render()
         self.hud.render(display)
 
     def destroy_sensors(self):
@@ -362,6 +368,7 @@ class World(object):
             self.camera_left.sensor,
             self.camera_right.sensor,
             self.camera_back.sensor,
+            self.semantic_lidar.sensor,
             self.collision_sensor.sensor,
             self.lane_invasion_sensor.sensor,
             self.gnss_sensor.sensor,
@@ -958,6 +965,143 @@ class SideViewSensor(object):
         array = array[:, :, :3]
         self.image = array
 
+
+
+# ==============================================================================
+# -- LidarSegmentation ------------------------------------------------------------
+# ==============================================================================
+
+
+class SemanticLidarSensor(object):
+    LABEL_COLORS = np.array([
+        (255, 255, 255),  # None
+        (70, 70, 70),  # Building
+        (100, 40, 40),  # Fences
+        (55, 90, 80),  # Other
+        (220, 20, 60),  # Pedestrian
+        (153, 153, 153),  # Pole
+        (157, 234, 50),  # RoadLines
+        (128, 64, 128),  # Road
+        (244, 35, 232),  # Sidewalk
+        (107, 142, 35),  # Vegetation
+        (0, 0, 142),  # Vehicle
+        (102, 102, 156),  # Wall
+        (220, 220, 0),  # TrafficSign
+        (70, 130, 180),  # Sky
+        (81, 0, 81),  # Ground
+        (150, 100, 100),  # Bridge
+        (230, 150, 140),  # RailTrack
+        (180, 165, 180),  # GuardRail
+        (250, 170, 30),  # TrafficLight
+        (110, 190, 160),  # Static
+        (170, 120, 50),  # Dynamic
+        (45, 60, 150),  # Water
+        (145, 170, 100),  # Terrain
+    ]) / 255.0  # normalize each channel [0-1] since is what Open3D uses
+
+    def __init__(self, parent_actor, hint):
+        self.sensor = None
+        self.image = None
+        # self.sensor_r = None
+        self.history = []
+        self._parent = parent_actor
+        self.hint = hint
+        self.frame = 0
+
+        lidar_transform = carla.Transform(carla.Location(x=-0.5, z=1.8))
+
+        world = self._parent.get_world()
+        lidar_bp = SemanticLidarSensor.generate_lidar_bp(world)
+        self.sensor = world.spawn_actor(lidar_bp, lidar_transform, attach_to=self._parent)
+
+        self.point_list = o3d.geometry.PointCloud()
+        # We need to pass the lambda a weak reference to self to avoid circular
+        # reference.
+        weak_self = weakref.ref(self)
+        self.sensor.listen(lambda data: SemanticLidarSensor._semantic_lidar_callback(weak_self, data))
+
+        self.vis = o3d.visualization.Visualizer()
+        self.vis.create_window(
+            window_name=self.hint,
+            width=960,
+            height=540,
+            left=480,
+            top=270)
+        self.vis.get_render_option().background_color = [0.05, 0.05, 0.05]
+        self.vis.get_render_option().point_size = 1
+        self.vis.get_render_option().show_coordinate_frame = True
+
+    @staticmethod
+    def generate_lidar_bp(world, delta = 0.05):
+        """Generates a CARLA blueprint based on the script parameters"""
+        lidar_bp = world.get_blueprint_library().find('sensor.lidar.ray_cast_semantic')
+
+        lidar_bp.set_attribute('upper_fov', '15.0')
+        lidar_bp.set_attribute('lower_fov', '-25.0')
+        lidar_bp.set_attribute('channels', '64')
+        lidar_bp.set_attribute('range', '100')
+        lidar_bp.set_attribute('rotation_frequency', str(1.0 / delta))
+        lidar_bp.set_attribute('points_per_second', '500000')
+        return lidar_bp
+
+    @staticmethod
+    def add_open3d_axis(vis):
+        """Add a small 3D axis on Open3D Visualizer"""
+        axis = o3d.geometry.LineSet()
+        axis.points = o3d.utility.Vector3dVector(np.array([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]]))
+        axis.lines = o3d.utility.Vector2iVector(np.array([
+            [0, 1],
+            [0, 2],
+            [0, 3]]))
+        axis.colors = o3d.utility.Vector3dVector(np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]]))
+        vis.add_geometry(axis)
+
+    def render(self):
+        if self.frame == 2:
+            self.vis.add_geometry(self.point_list)
+        self.vis.update_geometry(self.point_list)
+
+        self.vis.poll_events()
+        self.vis.update_renderer()
+        # # This can fix Open3D jittering issues:
+        time.sleep(0.005)
+        self.frame += 1
+
+    @staticmethod
+    def _semantic_lidar_callback(weak_self, point_cloud):
+        """Prepares a point cloud with semantic segmentation
+        colors ready to be consumed by Open3D"""
+        self = weak_self()
+
+        data = np.frombuffer(point_cloud.raw_data, dtype=np.dtype([
+            ('x', np.float32), ('y', np.float32), ('z', np.float32),
+            ('CosAngle', np.float32), ('ObjIdx', np.uint32), ('ObjTag', np.uint32)]))
+
+        # We're negating the y to correclty visualize a world that matches
+        # what we see in Unreal since Open3D uses a right-handed coordinate system
+        points = np.array([data['x'], -data['y'], data['z']]).T
+
+        # # An example of adding some noise to our data if needed:
+        # points += np.random.uniform(-0.05, 0.05, size=points.shape)
+
+        # Colorize the pointcloud based on the CityScapes color palette
+        labels = np.array(data['ObjTag'])
+        int_color = SemanticLidarSensor.LABEL_COLORS[labels]
+
+        # # In case you want to make the color intensity depending
+        # # of the incident ray angle, you can use:
+        # int_color *= np.array(data['CosAngle'])[:, None]
+
+        self.point_list.points = o3d.utility.Vector3dVector(points)
+        self.point_list.colors = o3d.utility.Vector3dVector(int_color)
+
 # ==============================================================================
 # -- CollisionSensor -----------------------------------------------------------
 # ==============================================================================
@@ -1218,6 +1362,7 @@ class CameraManager(object):
              'Camera Instance Segmentation (CityScapes Palette)', {}],
             ['sensor.camera.instance_segmentation', cc.Raw, 'Camera Instance Segmentation (Raw)', {}],
             ['sensor.lidar.ray_cast', None, 'Lidar (Ray-Cast)', {'range': '50'}],
+            ['sensor.lidar.ray_cast_semantic', None, 'Lidar (Ray-Cast Semantic)', {'range': '50'}], #dddddddddddddddddddddddddddddd
             ['sensor.camera.dvs', cc.Raw, 'Dynamic Vision Sensor', {}],
             ['sensor.camera.rgb', cc.Raw, 'Camera RGB Distorted',
              {'lens_circle_multiplier': '3.0',
