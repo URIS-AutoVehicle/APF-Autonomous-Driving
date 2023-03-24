@@ -282,7 +282,8 @@ class World(object):
                 print('Please add some Vehicle Spawn Point to your UE4 scene.')
                 sys.exit(1)
             spawn_points = self.map.get_spawn_points()
-            spawn_point = random.choice(spawn_points) if spawn_points else carla.Transform()
+            # spawn_point = random.choice(spawn_points) if spawn_points else carla.Transform()
+            spawn_point = spawn_points[118]
             self.player = self.world.try_spawn_actor(blueprint, spawn_point)
             self.show_vehicle_telemetry = False
             self.modify_vehicle_physics(self.player)
@@ -973,6 +974,8 @@ class SideViewSensor(object):
 
 
 class SemanticLidarSensor(object):
+    VEHICLE_ID = 10
+
     LABEL_COLORS = np.array([
         (255, 255, 255),  # None
         (70, 70, 70),  # Building
@@ -1039,13 +1042,12 @@ class SemanticLidarSensor(object):
         lidar_bp.set_attribute('upper_fov', '15.0')
         lidar_bp.set_attribute('lower_fov', '-25.0')
         lidar_bp.set_attribute('channels', '64')
-        lidar_bp.set_attribute('range', '100')
+        lidar_bp.set_attribute('range', '60')
         lidar_bp.set_attribute('rotation_frequency', str(1.0 / delta))
-        lidar_bp.set_attribute('points_per_second', '500000')
+        lidar_bp.set_attribute('points_per_second', '560000')
         return lidar_bp
 
-    @staticmethod
-    def add_open3d_axis(vis):
+    def add_open3d_axis(self):
         """Add a small 3D axis on Open3D Visualizer"""
         axis = o3d.geometry.LineSet()
         axis.points = o3d.utility.Vector3dVector(np.array([
@@ -1061,12 +1063,13 @@ class SemanticLidarSensor(object):
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
             [0.0, 0.0, 1.0]]))
-        vis.add_geometry(axis)
+        self.vis.add_geometry(axis)
 
     def render(self):
         if self.frame == 2:
             self.vis.add_geometry(self.point_list)
         self.vis.update_geometry(self.point_list)
+        self.add_open3d_axis()
 
         self.vis.poll_events()
         self.vis.update_renderer()
@@ -1086,21 +1089,35 @@ class SemanticLidarSensor(object):
 
         # We're negating the y to correclty visualize a world that matches
         # what we see in Unreal since Open3D uses a right-handed coordinate system
-        points = np.array([data['x'], -data['y'], data['z']]).T
+        # points = np.array([data['x'], -data['y'], data['z']]).T
 
         # # An example of adding some noise to our data if needed:
         # points += np.random.uniform(-0.05, 0.05, size=points.shape)
 
         # Colorize the pointcloud based on the CityScapes color palette
-        labels = np.array(data['ObjTag'])
-        int_color = SemanticLidarSensor.LABEL_COLORS[labels]
+
+        vehicle_data = data[np.in1d(data['ObjTag'], np.array([10]))]
+        vehicle_pc = np.array([vehicle_data['x'], -vehicle_data['y'], vehicle_data['z']]).T
+        distances = np.sqrt(np.sum(vehicle_pc*vehicle_pc, axis=1))
+        cos_val_pc = vehicle_data['x'] / distances
+        vehicle_color = np.array(
+            [SemanticLidarSensor.LABEL_COLORS[0]] * len(vehicle_pc)
+        )
+
+        threshold = 100
+        force = 1e5 * (threshold - distances) / np.sum(distances*distances*distances) / threshold
+        sum_force = np.sum(force*cos_val_pc)
+        print(f'\r{sum_force:10f}', end='')
+
+        # labels = np.array(data['ObjTag'])
+        # int_color = SemanticLidarSensor.LABEL_COLORS[labels]
 
         # # In case you want to make the color intensity depending
         # # of the incident ray angle, you can use:
         # int_color *= np.array(data['CosAngle'])[:, None]
 
-        self.point_list.points = o3d.utility.Vector3dVector(points)
-        self.point_list.colors = o3d.utility.Vector3dVector(int_color)
+        self.point_list.points = o3d.utility.Vector3dVector(vehicle_pc)
+        self.point_list.colors = o3d.utility.Vector3dVector(vehicle_color)
 
 # ==============================================================================
 # -- CollisionSensor -----------------------------------------------------------
