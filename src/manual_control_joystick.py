@@ -64,6 +64,9 @@ from __future__ import print_function
 import glob
 import os
 import sys
+import pickle
+
+import matplotlib.pyplot as plt
 
 try:
     sys.path.append(glob.glob('../carla/dist/carla-*%d.%d-%s.egg' % (
@@ -94,7 +97,6 @@ import weakref
 import cv2
 import open3d as o3d
 import time
-from queue import Queue
 
 try:
     import pygame
@@ -144,6 +146,12 @@ try:
     import numpy as np
 except ImportError:
     raise RuntimeError('cannot import numpy, make sure numpy package is installed')
+
+try:
+    import cupy as cp
+    print('cupy import success')
+except ImportError:
+    print('cupy not found, using numpy')
 
 
 # ==============================================================================
@@ -350,11 +358,11 @@ class World(object):
 
     def render(self, display):
         self.camera_manager.render(display)
-        self.camera_left.render()
-        self.camera_right.render()
-        self.camera_back.render()
-        self.semantic_lidar.render()
         self.hud.render(display)
+        # self.camera_left.render()
+        # self.camera_right.render()
+        # self.camera_back.render()
+        self.semantic_lidar.render()
 
     def destroy_sensors(self):
         self.camera_manager.sensor.destroy()
@@ -932,18 +940,24 @@ class SideViewSensor(object):
         bound_y = 0.5 + self._parent.bounding_box.extent.y
         bound_z = 0.5 + self._parent.bounding_box.extent.z
         transforms = [
+            # driver cam
             carla.Transform(carla.Location(x=-0.05 * bound_x, y=-0.25 * bound_y, z=0.95 * bound_z),
                              carla.Rotation(pitch=-1.0)),
+            # left cam
             carla.Transform(carla.Location(x=0.22 * bound_x, y=-0.5 * bound_y - 0.2, z=0.8 * bound_z),
                              carla.Rotation(pitch=-10.0, yaw=-170.0)),
+            # right cam
             carla.Transform(carla.Location(x=0.22 * bound_x, y=0.5 * bound_y + 0.2, z=0.8 * bound_z),
                              carla.Rotation(pitch=-10.0, yaw=170.0)),
+            # back cam
             carla.Transform(carla.Location(x=-0.2 * bound_x, y=0.0, z=2 * bound_z),
                              carla.Rotation(pitch=-30, yaw=180.0)),
         ]
 
         world = self._parent.get_world()
         bp = world.get_blueprint_library().find('sensor.camera.rgb')
+        # bp.set_attribute('image_size_x', "1920")
+        # bp.set_attribute('image_size_y', "1080")
         self.sensor = world.spawn_actor(bp, transforms[index % len(transforms)], attach_to=self._parent)
         # We need to pass the lambda a weak reference to self to avoid circular
         # reference.
@@ -961,10 +975,10 @@ class SideViewSensor(object):
             return
         # render an image and show in cv2
         image.convert(cc.Raw)
-        array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
-        array = np.reshape(array, (image.height, image.width, 4))
+        array = cp.frombuffer(image.raw_data, dtype=cp.dtype("uint8"))
+        array = cp.reshape(array, (image.height, image.width, 4))
         array = array[:, :, :3]
-        self.image = array
+        self.image = cp.asnumpy(array)
 
 
 
@@ -975,8 +989,11 @@ class SideViewSensor(object):
 
 class SemanticLidarSensor(object):
     VEHICLE_ID = 10
-
-    LABEL_COLORS = np.array([
+    VEHICLE_COLORS = cp.array([
+        (255, 50, 50),                  # outside bounding box (other vehicle)
+        (0, 100, 100),                  # inside bounding box (own vehicle)
+    ]) / 255.0
+    LABEL_COLORS = cp.array([
         (255, 255, 255),  # None
         (70, 70, 70),  # Building
         (100, 40, 40),  # Fences
@@ -1007,9 +1024,16 @@ class SemanticLidarSensor(object):
         self.image = None
         # self.sensor_r = None
         self.history = []
+        self.vehicle_repl_force = 0
         self._parent = parent_actor
         self.hint = hint
         self.frame = 0
+        self.bbox = np.array([
+            self._parent.bounding_box.extent.x + 0.5,
+            self._parent.bounding_box.extent.y + 0.5,
+            self._parent.bounding_box.extent.z + 0.5,
+        ])
+        print('bbox: ', self.bbox)
 
         lidar_transform = carla.Transform(carla.Location(x=-0.5, z=1.8))
 
@@ -1026,13 +1050,23 @@ class SemanticLidarSensor(object):
         self.vis = o3d.visualization.Visualizer()
         self.vis.create_window(
             window_name=self.hint,
-            width=960,
-            height=540,
+            width=1920,
+            height=1080,
             left=480,
             top=270)
         self.vis.get_render_option().background_color = [0.05, 0.05, 0.05]
         self.vis.get_render_option().point_size = 1
         self.vis.get_render_option().show_coordinate_frame = True
+        self.add_open3d_axis()
+
+        plt.ion()
+        self.ax: plt.Axes = None
+        self.fig: plt.Figure = None
+        self.fig, self.ax = plt.subplots()
+        self.x_interval = 100
+        self.ax.set_xlim(-self.x_interval, self.x_interval)
+        self.fig.canvas.draw()
+        plt.show(block=False)
 
     @staticmethod
     def generate_lidar_bp(world, delta = 0.05):
@@ -1069,13 +1103,19 @@ class SemanticLidarSensor(object):
         if self.frame == 2:
             self.vis.add_geometry(self.point_list)
         self.vis.update_geometry(self.point_list)
-        self.add_open3d_axis()
 
         self.vis.poll_events()
         self.vis.update_renderer()
+        self.ax.set_xlim(self.frame - self.x_interval, self.frame + self.x_interval)
+        # if self.vehicle_repl_force > -10:
+        self.ax.plot([self.frame], [self.vehicle_repl_force], 'ro')
+        plt.draw()
+        plt.pause(0.005)
+
         # # This can fix Open3D jittering issues:
-        time.sleep(0.005)
+        # time.sleep(0.005)
         self.frame += 1
+
 
     @staticmethod
     def _semantic_lidar_callback(weak_self, point_cloud):
@@ -1083,10 +1123,47 @@ class SemanticLidarSensor(object):
         colors ready to be consumed by Open3D"""
         self = weak_self()
 
-        data = np.frombuffer(point_cloud.raw_data, dtype=np.dtype([
-            ('x', np.float32), ('y', np.float32), ('z', np.float32),
-            ('CosAngle', np.float32), ('ObjIdx', np.uint32), ('ObjTag', np.uint32)]))
+        # bounding box limits, two points, forming diagonal of the box
+        lim_l = cp.array(-1 * self.bbox)
+        lim_r = cp.array(self.bbox)
 
+        try:
+            data = np.frombuffer(point_cloud.raw_data, dtype=np.dtype([
+                ('x', np.float32), ('y', np.float32), ('z', np.float32),
+                ('CosAngle', np.float32), ('ObjIdx', np.uint32), ('ObjTag', np.uint32)]))
+            #if self.frame == 100:                              # save a sample for inspection
+            #    pickle.dump(data, open('data.pkl', 'wb'))
+
+            # filter to get vehicle points
+            vehicle_data = data[np.in1d(data['ObjTag'], np.array([10]))]
+
+            # convert numpy to cupy
+            vehicle_pts_cos = cp.array(vehicle_data['CosAngle'])
+            vehicle_pts = cp.array([vehicle_data['x'], -vehicle_data['y'], vehicle_data['z']]).T
+            assert vehicle_pts.shape[0] == vehicle_pts_cos.shape[0], \
+                f'pts{vehicle_pts.shape}!=cos{vehicle_pts_cos.shape}'
+
+            # filter point cloud within bounding box (own vehicle) and outside (other vehicles)
+            bbox_mask = cp.all(cp.logical_and(lim_l <= vehicle_pts, vehicle_pts <= lim_r), axis=1)
+            # in_box_pc = vehicle_pc[bbox_mask]
+            out_box_pts = vehicle_pts[cp.logical_not(bbox_mask)]
+            out_box_pts_cos = vehicle_pts_cos[cp.logical_not(bbox_mask)]
+
+            # compute a repulsive force from other vehicles
+            # ignore own vehicle
+            distances = cp.sqrt(cp.sum(out_box_pts * out_box_pts, axis=1))
+
+            # calculate a sum force
+            threshold = 20
+            force = 1e5 * (threshold - distances) / cp.sum(distances*distances*distances) / threshold
+            sum_force = float(cp.sum(force*out_box_pts_cos))
+            print(f'\rsum force: {sum_force:10f} filter: {out_box_pts.shape}/{vehicle_pts.shape}', end='')
+        except Exception as e:
+            raise e
+            exit(1)
+
+        # round to 2 decimal places
+        self.vehicle_repl_force = round(sum_force, 2)
         # We're negating the y to correclty visualize a world that matches
         # what we see in Unreal since Open3D uses a right-handed coordinate system
         # points = np.array([data['x'], -data['y'], data['z']]).T
@@ -1095,29 +1172,15 @@ class SemanticLidarSensor(object):
         # points += np.random.uniform(-0.05, 0.05, size=points.shape)
 
         # Colorize the pointcloud based on the CityScapes color palette
-
-        vehicle_data = data[np.in1d(data['ObjTag'], np.array([10]))]
-        vehicle_pc = np.array([vehicle_data['x'], -vehicle_data['y'], vehicle_data['z']]).T
-        distances = np.sqrt(np.sum(vehicle_pc*vehicle_pc, axis=1))
-        cos_val_pc = vehicle_data['x'] / distances
-        vehicle_color = np.array(
-            [SemanticLidarSensor.LABEL_COLORS[0]] * len(vehicle_pc)
-        )
-
-        threshold = 100
-        force = 1e5 * (threshold - distances) / np.sum(distances*distances*distances) / threshold
-        sum_force = np.sum(force*cos_val_pc)
-        print(f'\r{sum_force:10f}', end='')
-
-        # labels = np.array(data['ObjTag'])
-        # int_color = SemanticLidarSensor.LABEL_COLORS[labels]
+        labels = bbox_mask.astype(cp.uint8) # np.array(data['ObjTag'])
+        vehicle_color = SemanticLidarSensor.VEHICLE_COLORS[labels]
 
         # # In case you want to make the color intensity depending
         # # of the incident ray angle, you can use:
         # int_color *= np.array(data['CosAngle'])[:, None]
 
-        self.point_list.points = o3d.utility.Vector3dVector(vehicle_pc)
-        self.point_list.colors = o3d.utility.Vector3dVector(vehicle_color)
+        self.point_list.points = o3d.utility.Vector3dVector(cp.asnumpy(vehicle_pts))
+        self.point_list.colors = o3d.utility.Vector3dVector(cp.asnumpy(vehicle_color))
 
 # ==============================================================================
 # -- CollisionSensor -----------------------------------------------------------
@@ -1339,32 +1402,31 @@ class CameraManager(object):
         bound_x = 0.5 + self._parent.bounding_box.extent.x
         bound_y = 0.5 + self._parent.bounding_box.extent.y
         bound_z = 0.5 + self._parent.bounding_box.extent.z
-        print(f'Bounds: {bound_x} {bound_y} {bound_z}')
-        Attachment = carla.AttachmentType
+        attachtype = carla.AttachmentType
 
         if self._parent.type_id.startswith("walker.pedestrian"):
             self._camera_transforms = [
-                (carla.Transform(carla.Location(x=-2.5, z=0.0), carla.Rotation(pitch=-8.0)), Attachment.SpringArm),
-                (carla.Transform(carla.Location(x=1.6, z=1.7)), Attachment.Rigid),
+                (carla.Transform(carla.Location(x=-2.5, z=0.0), carla.Rotation(pitch=-8.0)), attachtype.SpringArm),
+                (carla.Transform(carla.Location(x=1.6, z=1.7)), attachtype.Rigid),
                 (
                     carla.Transform(carla.Location(x=2.5, y=0.5, z=0.0), carla.Rotation(pitch=-8.0)),
-                    Attachment.SpringArm),
-                (carla.Transform(carla.Location(x=-4.0, z=2.0), carla.Rotation(pitch=6.0)), Attachment.SpringArm),
-                (carla.Transform(carla.Location(x=0, y=-2.5, z=-0.0), carla.Rotation(yaw=90.0)), Attachment.Rigid)]
+                    attachtype.SpringArm),
+                (carla.Transform(carla.Location(x=-4.0, z=2.0), carla.Rotation(pitch=6.0)), attachtype.SpringArm),
+                (carla.Transform(carla.Location(x=0, y=-2.5, z=-0.0), carla.Rotation(yaw=90.0)), attachtype.Rigid)]
         else:
             self._camera_transforms = [
                 (carla.Transform(carla.Location(x=-0.05 * bound_x, y=-0.25 * bound_y, z=0.95 * bound_z),
-                                 carla.Rotation(pitch=-1.0)), Attachment.Rigid),
+                                 carla.Rotation(pitch=-1.0)), attachtype.Rigid),
                 (carla.Transform(carla.Location(x=0.22 * bound_x, y=-0.5 * bound_y - 0.2, z=0.8 * bound_z),
-                                 carla.Rotation(pitch=-10.0, yaw=-170.0)), Attachment.Rigid),
+                                 carla.Rotation(pitch=-10.0, yaw=-170.0)), attachtype.Rigid),
                 (carla.Transform(carla.Location(x=0.22 * bound_x, y=0.5 * bound_y + 0.2, z=0.8 * bound_z),
-                                 carla.Rotation(pitch=-10.0, yaw=170.0)), Attachment.Rigid),
+                                 carla.Rotation(pitch=-10.0, yaw=170.0)), attachtype.Rigid),
                 (carla.Transform(carla.Location(x=-0.2 * bound_x, y=0.0, z=2 * bound_z),
-                                 carla.Rotation(pitch=-30, yaw=180.0)), Attachment.Rigid),
+                                 carla.Rotation(pitch=-30, yaw=180.0)), attachtype.Rigid),
                 (carla.Transform(carla.Location(x=-2.0 * bound_x, y=+0.0 * bound_y, z=2.0 * bound_z),
-                                 carla.Rotation(pitch=8.0)), Attachment.SpringArm),
+                                 carla.Rotation(pitch=8.0)), attachtype.SpringArm),
                 (carla.Transform(carla.Location(x=-2.8 * bound_x, y=+0.0 * bound_y, z=4.6 * bound_z),
-                                 carla.Rotation(pitch=6.0)), Attachment.SpringArm)]
+                                 carla.Rotation(pitch=6.0)), attachtype.SpringArm)]
 
         self.transform_index = 1
         self.sensors = [
@@ -1527,7 +1589,7 @@ def game_loop(args):
 
         display = pygame.display.set_mode(
             (args.width, args.height),
-            pygame.HWSURFACE | pygame.DOUBLEBUF  # | pygame.FULLSCREEN
+            pygame.DOUBLEBUF # | pygame.FULLSCREEN
         )
         display.fill((0, 0, 0))
         pygame.display.flip()
@@ -1583,6 +1645,7 @@ def main():
         '--host',
         metavar='H',
         default='127.0.0.1',
+        # default='10.22.4.165',
         help='IP of the host server (default: 127.0.0.1)')
     argparser.add_argument(
         '-p', '--port',
