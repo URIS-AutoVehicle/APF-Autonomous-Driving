@@ -97,6 +97,7 @@ import weakref
 import cv2
 import open3d as o3d
 import time
+from statistics import median
 
 try:
     import pygame
@@ -1023,8 +1024,9 @@ class SemanticLidarSensor(object):
         self.sensor = None
         self.image = None
         # self.sensor_r = None
-        self.history = []
+        self.history = collections.deque(maxlen=11)
         self.vehicle_repl_force = 0
+        self.median = 0
         self._parent = parent_actor
         self.hint = hint
         self.frame = 0
@@ -1108,13 +1110,29 @@ class SemanticLidarSensor(object):
         self.vis.update_renderer()
         self.ax.set_xlim(self.frame - self.x_interval, self.frame + self.x_interval)
         # if self.vehicle_repl_force > -10:
+
+        # plotting repulsive force history
         self.ax.plot([self.frame], [self.vehicle_repl_force], 'ro')
+        self.ax.plot([self.frame], [self.median], 'bo')
         plt.draw()
         plt.pause(0.005)
 
         # # This can fix Open3D jittering issues:
         # time.sleep(0.005)
         self.frame += 1
+
+    @staticmethod
+    def _vehicle_throttle_control(repl, attr = 2, threshold = 4):
+        '''
+        compute the vehicle's throttle based on repl force and attr force
+        return: throttle value, ranged [0.0, 1.0]
+        '''
+        x = attr - repl
+        if x > threshold:
+            return 1
+        elif x < -threshold:
+            return 0
+        return round(1 / (1 + math.exp(-x)), 3) # sigmoid function
 
 
     @staticmethod
@@ -1128,18 +1146,22 @@ class SemanticLidarSensor(object):
         lim_r = cp.array(self.bbox)
 
         try:
+            # 2d parsing is not supported by cupy yet
+            # so use numpy to parse, and then convert to cupy to handle heavy computation
             data = np.frombuffer(point_cloud.raw_data, dtype=np.dtype([
                 ('x', np.float32), ('y', np.float32), ('z', np.float32),
                 ('CosAngle', np.float32), ('ObjIdx', np.uint32), ('ObjTag', np.uint32)]))
-            #if self.frame == 100:                              # save a sample for inspection
-            #    pickle.dump(data, open('data.pkl', 'wb'))
+            if self.frame == 100:                              # save a sample for inspection
+                print('pickle!')
+                pickle.dump(data, open('data.pkl', 'wb'))
 
             # filter to get vehicle points
-            vehicle_data = data[np.in1d(data['ObjTag'], np.array([10]))]
+            data = data[np.in1d(data['ObjTag'], np.array([10]))]
 
             # convert numpy to cupy
-            vehicle_pts_cos = cp.array(vehicle_data['CosAngle'])
-            vehicle_pts = cp.array([vehicle_data['x'], -vehicle_data['y'], vehicle_data['z']]).T
+            vehicle_pts_cos = cp.array(data['CosAngle'])
+            # vehicle_pts_sin = cp.sqrt(1 - vehicle_pts_cos ** 2)
+            vehicle_pts = cp.array([data['x'], -data['y'], data['z']]).T
             assert vehicle_pts.shape[0] == vehicle_pts_cos.shape[0], \
                 f'pts{vehicle_pts.shape}!=cos{vehicle_pts_cos.shape}'
 
@@ -1157,13 +1179,25 @@ class SemanticLidarSensor(object):
             threshold = 20
             force = 1e5 * (threshold - distances) / cp.sum(distances*distances*distances) / threshold
             sum_force = float(cp.sum(force*out_box_pts_cos))
-            print(f'\rsum force: {sum_force:10f} filter: {out_box_pts.shape}/{vehicle_pts.shape}', end='')
         except Exception as e:
             raise e
             exit(1)
 
-        # round to 2 decimal places
+        # round to 2 decimal places, then maintain a fixed-length history for navigating
         self.vehicle_repl_force = round(sum_force, 2)
+        if self.vehicle_repl_force < -5:
+            print(f'warning: repulsive negative {self.vehicle_repl_force}')
+        self.history.appendleft(self.vehicle_repl_force)
+        if len(self.history) < self.history.maxlen:
+            self.median = 0
+        else:
+            self.median = median(self.history)
+
+        # compute throttle based on repulsive force
+        throttle = SemanticLidarSensor._vehicle_throttle_control(self.median)
+        self._parent.apply_control(carla.VehicleControl(throttle=throttle, steer=0.0))
+        print(f'\rF_repl: {self.vehicle_repl_force:3f} {throttle:3f} filter: {out_box_pts.shape}/{vehicle_pts.shape}', end='')
+
         # We're negating the y to correclty visualize a world that matches
         # what we see in Unreal since Open3D uses a right-handed coordinate system
         # points = np.array([data['x'], -data['y'], data['z']]).T
