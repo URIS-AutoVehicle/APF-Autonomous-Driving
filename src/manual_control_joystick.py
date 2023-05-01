@@ -98,6 +98,7 @@ import cv2
 import open3d as o3d
 import time
 from statistics import median
+import scipy.cluster.hierarchy as hcluster
 
 try:
     import pygame
@@ -991,8 +992,18 @@ class SideViewSensor(object):
 class SemanticLidarSensor(object):
     VEHICLE_ID = 10
     VEHICLE_COLORS = cp.array([
-        (255, 50, 50),                  # outside bounding box (other vehicle)
         (0, 100, 100),                  # inside bounding box (own vehicle)
+        (255, 50, 50),                  # outside bounding box (other vehicle)
+        (255, 0, 0),
+        (0, 255, 0),
+        (0, 0, 255),
+        (255, 255, 0),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+        (255, 100, 100),
+        (100, 255, 100),
+        (100, 100, 255),
     ]) / 255.0
     LABEL_COLORS = cp.array([
         (255, 255, 255),  # None
@@ -1075,7 +1086,7 @@ class SemanticLidarSensor(object):
         """Generates a CARLA blueprint based on the script parameters"""
         lidar_bp = world.get_blueprint_library().find('sensor.lidar.ray_cast_semantic')
 
-        lidar_bp.set_attribute('upper_fov', '15.0')
+        lidar_bp.set_attribute('upper_fov', '10.0')
         lidar_bp.set_attribute('lower_fov', '-25.0')
         lidar_bp.set_attribute('channels', '64')
         lidar_bp.set_attribute('range', '60')
@@ -1115,7 +1126,7 @@ class SemanticLidarSensor(object):
         self.ax.plot([self.frame], [self.vehicle_repl_force], 'ro')
         self.ax.plot([self.frame], [self.median], 'bo')
         plt.draw()
-        plt.pause(0.005)
+        plt.pause(0.01)
 
         # # This can fix Open3D jittering issues:
         # time.sleep(0.005)
@@ -1129,14 +1140,14 @@ class SemanticLidarSensor(object):
         '''
         x = attr - repl
         if x > threshold:
-            return 1
+            return 1, 0
         elif x < -threshold:
-            return 0
-        return round(1 / (1 + math.exp(-x)), 3) # sigmoid function
+            return 0, 1
+        return round(1 / (1 + math.exp(-x)), 3), 0 # sigmoid function
 
 
     @staticmethod
-    def _semantic_lidar_callback(weak_self, point_cloud):
+    def _semantic_lidar_callback(weak_self, point_cloud, autopilot = False, save_sample = False):
         """Prepares a point cloud with semantic segmentation
         colors ready to be consumed by Open3D"""
         self = weak_self()
@@ -1151,7 +1162,7 @@ class SemanticLidarSensor(object):
             data = np.frombuffer(point_cloud.raw_data, dtype=np.dtype([
                 ('x', np.float32), ('y', np.float32), ('z', np.float32),
                 ('CosAngle', np.float32), ('ObjIdx', np.uint32), ('ObjTag', np.uint32)]))
-            if self.frame == 100:                              # save a sample for inspection
+            if self.frame == 100 and save_sample:                       # save a sample for inspection
                 print('pickle!')
                 pickle.dump(data, open('data.pkl', 'wb'))
 
@@ -1161,9 +1172,16 @@ class SemanticLidarSensor(object):
             # convert numpy to cupy
             vehicle_pts_cos = cp.array(data['CosAngle'])
             # vehicle_pts_sin = cp.sqrt(1 - vehicle_pts_cos ** 2)
+
+            # We're negating the y to correclty visualize a world that matches
+            # what we see in Unreal since Open3D uses a right-handed coordinate system
             vehicle_pts = cp.array([data['x'], -data['y'], data['z']]).T
             assert vehicle_pts.shape[0] == vehicle_pts_cos.shape[0], \
                 f'pts{vehicle_pts.shape}!=cos{vehicle_pts_cos.shape}'
+
+            cluster_thresh = 0.75
+            clusters = hcluster.fclusterdata(cp.asnumpy(vehicle_pts), cluster_thresh, criterion="distance").astype(
+                np.uint8) + 1
 
             # filter point cloud within bounding box (own vehicle) and outside (other vehicles)
             bbox_mask = cp.all(cp.logical_and(lim_l <= vehicle_pts, vehicle_pts <= lim_r), axis=1)
@@ -1194,19 +1212,17 @@ class SemanticLidarSensor(object):
             self.median = median(self.history)
 
         # compute throttle based on repulsive force
-        throttle = SemanticLidarSensor._vehicle_throttle_control(self.median)
-        self._parent.apply_control(carla.VehicleControl(throttle=throttle, steer=0.0))
-        print(f'\rF_repl: {self.vehicle_repl_force:3f} {throttle:3f} filter: {out_box_pts.shape}/{vehicle_pts.shape}', end='')
-
-        # We're negating the y to correclty visualize a world that matches
-        # what we see in Unreal since Open3D uses a right-handed coordinate system
+        if autopilot:
+            throttle, brake = SemanticLidarSensor._vehicle_throttle_control(self.median)
+            self._parent.apply_control(carla.VehicleControl(throttle=throttle, brake=brake, steer=0.0))
         # points = np.array([data['x'], -data['y'], data['z']]).T
 
         # # An example of adding some noise to our data if needed:
         # points += np.random.uniform(-0.05, 0.05, size=points.shape)
 
         # Colorize the pointcloud based on the CityScapes color palette
-        labels = bbox_mask.astype(cp.uint8) # np.array(data['ObjTag'])
+        labels = cp.logical_not(bbox_mask).astype(cp.uint8)  # np.array(data['ObjTag'])
+        labels *= (cp.array(clusters))
         vehicle_color = SemanticLidarSensor.VEHICLE_COLORS[labels]
 
         # # In case you want to make the color intensity depending
